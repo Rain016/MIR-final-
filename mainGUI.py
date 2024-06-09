@@ -2,9 +2,22 @@ import ast
 import time
 import threading
 import tkinter as tk
+
+import sys
+import os
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+from rtmidi.midiutil import open_midiport
+# from pynput import keyboard
+
+import score_grapher_v0
+import score_sort_v0
+
 from tkinter import filedialog, scrolledtext, ttk
 from rtmidi import MidiIn, MidiOut
 from rtmidi.midiconstants import NOTE_OFF, NOTE_ON, CONTROL_CHANGE, ALL_SOUND_OFF,  ALL_NOTES_OFF
+
 
 def open_file_to_terminal1():
     filepath = filedialog.askopenfilename(filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
@@ -62,6 +75,143 @@ def open_score_recorder():
     score_recorder_window = tk.Toplevel(root)
     score_recorder_window.title("Score Recorder")
 
+    global running
+    running = 0
+    
+    global inputmsglog, inputtiminglog, receivednotelog, scorelog, outputscore
+    global midiout, port, midiin, onoff, notes, scorepositions, noteon_notes, noteon_scorepositions, quantize_per_beat
+    # log = ''
+    inputmsglog = []
+    inputtiminglog = []
+    receivednotelog = []
+    scorelog = [] #before arranging order
+    outputscore = [] #final output
+    
+    midiout = MidiOut()
+        
+    port = sys.argv[1] if len(sys.argv) > 1 else None
+    midiin = MidiIn()
+    midiin.open_port(0)
+    # midiin, port_name = open_midiport(0, port_name="loopMIDI Port 0")
+        
+    onoff = []
+    notes = []
+    scorepositions = []
+
+    noteon_notes = []
+    noteon_scorepositions = []
+
+    quantize_per_beat = 4
+
+    def recording():
+        global midiin, midiout, running
+        global quantize_per_beat, scorelog, outputscore, inputmsglog
+
+        time_start = time.time()
+        log = ''
+        inputmsglog = []
+        inputtiminglog = []
+        receivednotelog = []
+        scorelog = [] #before arranging order
+        outputscore = [] #final output
+        
+        # midiout = MidiOut()
+        
+        # port = sys.argv[1] if len(sys.argv) > 1 else None
+        # midiin = MidiIn()
+        # midiin.open_port(0)
+        # # midiin, port_name = open_midiport(0, port_name="loopMIDI Port 0")
+        
+        onoff = []
+        notes = []
+        scorepositions = []
+
+        noteon_notes = []
+        noteon_scorepositions = []
+        
+        print_to_terminal('input reading starts \n', recorder_terminal)
+        beattime=range(1,101)
+        print_to_terminal(str(f'{beattime} \n\n'), recorder_terminal)
+        beatplayed=np.zeros(100)
+
+        current_time=0
+        firstposition=0 #initiate the variable. this will be overwritten by the time at which the first note is actually played
+        eventnumber=0
+        while running==1: #and current_time<9:
+            time_stamp = time.time()            # Get current time.
+            current_time = time_stamp - time_start
+
+            for i in range(100):
+                if beattime[i]<=current_time and beatplayed[i]==0:
+                    midiout.send_message([0x90,108,127])
+                    print_to_terminal(str(f'beat {i}\n'), recorder_terminal)
+                    beatplayed[i]=1
+            msg = midiin.get_message()
+            if msg:
+                current_time = time.time() - time_start
+                inputmsglog+=[['Keyboard1',msg[0][0],msg[0][1],msg[0][2],current_time]]
+                if True:
+                    onoff+=[msg[0][0]]
+                    notes+=[msg[0][1]]
+                    currentposition=round(current_time*quantize_per_beat)/quantize_per_beat
+                    if firstposition==0:
+                        firstposition=currentposition
+                    scorepositions+=[currentposition-firstposition+3]
+                    scorelog+=[[eventnumber,msg[0][0],msg[0][1],currentposition-firstposition]]
+                    eventnumber+=1
+                
+                if msg[0][0]==144: #only noteon
+                    noteon_notes+=[msg[0][1]]
+                    currentposition=round(current_time*quantize_per_beat)/quantize_per_beat
+                    noteon_scorepositions+=[currentposition-firstposition+3]
+
+            #midiout.send_message(msg[0])
+            #  if msg[0][2]>0 and msg[0][0]>143:
+            #      inputtiminglog+=[current_time]
+                print_to_terminal('input:'+str(msg)+'\n', recorder_terminal)
+
+    def start_record():
+        global running
+        if (running == 0):
+            running = 1
+            threading.Thread(target=recording).start()
+
+    def stop_record():
+        global running, scorelog, outputscore, quantize_per_beat
+        running = 0
+        print_to_terminal("\n" + "Stop recording..." + "\n\n", recorder_terminal)
+        print_to_terminal('score log: ', recorder_terminal)
+        print_to_terminal(scorelog, recorder_terminal)
+        
+        outputscore = score_sort_v0.sort(quantize_per_beat, scorelog)
+        print_to_terminal('\n\nsorted score log: ', recorder_terminal)
+        print_to_terminal(outputscore, recorder_terminal)
+        print_to_terminal("\n", recorder_terminal)
+        
+    def save_record():
+        global inputmsglog, outputscore
+        print_to_terminal("\nRecording Saved.\n", recorder_terminal)
+        
+        logdirectory = "logs/score_recorder_"+str(time.time())
+        os.makedirs(logdirectory)
+        
+        inputlogfile=open(logdirectory+"/inputmsglog.txt","w")
+        inputlogfile.write(str(inputmsglog))
+        inputlogfile.close()
+        
+        scorefile=open(logdirectory+"/outputscore.txt","w")
+        scorefile.write(str(outputscore))
+        scorefile.close()
+        
+    def clear_terminal(widget):
+        widget.delete(1.0, tk.END)
+        # midiin.open_port()
+        
+    def print_to_terminal(message, widget):
+        widget.insert(tk.END, message)
+        widget.see(tk.END)
+    
+
     # Label and ScrolledText for Recorder Terminal
     label_terminal_recorder = tk.Label(score_recorder_window, text='Score Recorder Terminal')
     label_terminal_recorder.grid(row=0, column=0, padx=10, pady=5)
@@ -70,18 +220,22 @@ def open_score_recorder():
     recorder_terminal.grid(row=1, column=0, padx=10, pady=5)
 
     # Buttons
-    button_run = tk.Button(score_recorder_window, text="Run", width=15)
-    button_run.grid(row=2, column=0, padx=5, pady=10, sticky='ew')
+    button_start = tk.Button(score_recorder_window, text="Start Recording", width=15, command=start_record)
+    button_start.grid(row=2, column=0, padx=5, pady=10, sticky='ew')
 
-    button_stop = tk.Button(score_recorder_window, text="Stop", width=15)
+    button_stop = tk.Button(score_recorder_window, text="Stop Recording", width=15, command=stop_record)
     button_stop.grid(row=3, column=0, padx=5, pady=10, sticky='ew')
 
-    button_save = tk.Button(score_recorder_window, text="Save", width=15)
+    button_save = tk.Button(score_recorder_window, text="Save to the file", width=15, command=save_record)
     button_save.grid(row=4, column=0, padx=5, pady=10, sticky='ew')
+    
+    button_clear = tk.Button(score_recorder_window, text="Clear the terminal", width=15, command=lambda: clear_terminal(recorder_terminal))
+    button_clear.grid(row=5, column=0, padx=5, pady=10, sticky='ew')
 
     button_close = tk.Button(score_recorder_window, text="Close", width=15, command=score_recorder_window.destroy)
-    button_close.grid(row=5, column=0, padx=5, pady=10, sticky='ew')
-
+    button_close.grid(row=6, column=0, padx=5, pady=10, sticky='ew')
+    
+    
 def open_score_player():
     score_player_window = tk.Toplevel(root)
     score_player_window.title("Score Player") 
@@ -298,7 +452,7 @@ def midi_init():
         # If output ports are available, proceed with retrieving the default output port
         default_output_port = output_ports[0]
         # Open the selected MIDI output port
-        midi_out.open_port(output_ports.index(default_output_port))
+        # midi_out.open_port(output_ports.index(default_output_port))
         print_to_output_logs(f"Default MIDI output port: {default_output_port}")
         entry_current_midi_output_port.delete(0, tk.END)  # Clear existing content
         entry_current_midi_output_port.insert(tk.END, default_output_port)  # Insert default output port name into Entry
