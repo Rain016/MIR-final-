@@ -4,8 +4,10 @@ import threading
 import tkinter as tk
 import os
 import sys
+import queue
 import numpy as np
 import score_sort_v0
+import score_grapher_v0
 from tkinter import filedialog, scrolledtext, ttk
 from rtmidi import MidiIn, MidiOut
 from rtmidi.midiconstants import NOTE_OFF, NOTE_ON, CONTROL_CHANGE, ALL_SOUND_OFF,  ALL_NOTES_OFF
@@ -17,19 +19,43 @@ def print_to_terminal(message, terminal):
 def clear_terminal(terminal):
     terminal.delete(1.0, tk.END)
 
-def open_file_to_terminal(terminal):
-    terminal.delete(1.0, tk.END)
+def open_file_to_terminal1():
+    terminal1.delete(1.0, tk.END)
     file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
     if file_path:
         with open(file_path, 'r') as file:
             try:
-                #global inputlog
-                inputlog = ast.literal_eval(file.read())
-                for item in inputlog:
-                    print_to_terminal(str(item) + '\n', terminal)
-                print_to_terminal('\n' + 'Sum of notes = ' + str(len(inputlog)) + '\n', terminal)
+                global inputscore
+                inputscore = ast.literal_eval(file.read())
+                for item in inputscore:
+                    print_to_terminal(str(item) + '\n', terminal1)
+                print_to_terminal('\n' + 'Sum of notes = ' + str(len(inputscore)) + '\n', terminal1)
+                print_to_terminal("Will listen for input score above.\n", terminal1)
             except (ValueError, SyntaxError):
-                print_to_terminal("Error: File content is not a valid Python literal.\n", terminal)
+                print_to_terminal("Error: File content is not a valid Python literal.\n", terminal1)
+    
+    for index,note in enumerate(inputscore):
+        if not note[0]==index:
+            print_to_terminal("invalid inputscore.\n", terminal1)
+
+def open_file_to_terminal2():
+    terminal2.delete(1.0, tk.END)
+    file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
+    if file_path:
+        with open(file_path, 'r') as file:
+            try:
+                global outputscore
+                outputscore = ast.literal_eval(file.read())
+                for item in outputscore:
+                    print_to_terminal(str(item) + '\n', terminal2)
+                print_to_terminal('\n' + 'Sum of notes = ' + str(len(outputscore)) + '\n', terminal2)
+                print_to_terminal("Will play output score above.\n", terminal2)
+            except (ValueError, SyntaxError):
+                print_to_terminal("Error: File content is not a valid Python literal.\n", terminal2)
+    
+    for index,note in enumerate(outputscore):
+        if not note[0]==index:
+            print_to_terminal("invalid outputscore.\n", terminal2)
 
 def save_terminal_output_to_file(terminal):
     content = terminal.get("1.0", tk.END)
@@ -39,12 +65,6 @@ def save_terminal_output_to_file(terminal):
         with open(file_path, 'w') as file:
             file.write(content)
         print_to_terminal(f"Terminal content saved to file: {file_path}\n", terminal)
-
-def run_real_accomp():
-    print_to_terminal("Running...", terminal3)
-
-def stop_real_accomp():
-    print_to_terminal("Stopping...", terminal3)
 
 def open_score_recorder():
     score_recorder_window = tk.Toplevel(root)
@@ -148,14 +168,14 @@ def open_score_recorder():
         global inputmsglog, outputscore
         print_to_terminal("\nRecording Saved.\n", recorder_terminal)
         
-        logdirectory = "logs/score_recorder_"+str(time.time())
-        os.makedirs(logdirectory)
+        logdirectory_record = "logs/score_recorder_"+str(time.time())
+        os.makedirs(logdirectory_record)
         
-        inputlogfile=open(logdirectory+"/inputmsglog.txt","w")
+        inputlogfile=open(logdirectory_record+"/inputmsglog.txt","w")
         inputlogfile.write(str(inputmsglog))
         inputlogfile.close()
         
-        scorefile=open(logdirectory+"/outputscore.txt","w")
+        scorefile=open(logdirectory_record+"/outputscore.txt","w")
         scorefile.write(str(outputscore))
         scorefile.close()
         
@@ -477,6 +497,267 @@ def midi_init():
         entry_current_midi_input_port.delete(0, tk.END)  # Clear existing content
         entry_current_midi_input_port.insert(tk.END, default_input_port)  # Insert default input port name into Entry
 
+def run_real_accomp():
+    global stop_flag_accomp
+    stop_flag_accomp = threading.Event()
+    stop_flag_accomp.clear()
+    
+    print_to_terminal("Running\n", terminal3)
+    
+    global lastinputIndex, lastinputscorepositionIndex, outputinterpretation
+    inputinterpretation=[event+[0,0] for event in inputscore]
+    outputinterpretation=[event+[0,0] for event in outputscore]
+    
+    def close_running():
+        stop_flag_accomp.set()
+        threading.Thread(target=input_reading, args=(stop_flag_accomp,)).join
+        threading.Thread(target=calculating, args=(stop_flag_accomp,)).join
+        threading.Thread(target=worker, args=(stop_flag_accomp,)).join
+        inputq.join()
+        print_to_terminal('Exit\n', terminal3)
+        running_window.destroy()    
+    
+    running_window = tk.Toplevel(root)
+    running_window.title("Running Window") 
+    running_window.protocol("WM_DELETE_WINDOW", close_running)  # Capture the window close event
+    
+    # Label and ScrolledText for Player Terminal
+    running_window_label = tk.Label(running_window, text='Running Window')
+    running_window_label.grid(row=0, column=0, padx=10, pady=5)
+
+    running_window_terminal = scrolledtext.ScrolledText(running_window, wrap=tk.WORD, width=60, height=30)
+    running_window_terminal.grid(row=1, column=0, padx=10, pady=5)
+    
+    # Buttons
+    running_window_button = tk.Button(running_window, text="Close", width=15, command=close_running)
+    running_window_button.grid(row=2, column=0, padx=5, pady=10, sticky='ew')
+    
+    #make a list of all unique inputscorepositions
+    inputscorepositions=[-1]
+    for note in inputinterpretation:
+        if not note[3]==inputscorepositions[-1]:
+            inputscorepositions+=[note[3]]
+    inputscorepositions.append(10000) #to avoid error when processing the last note
+    #print(inputscorepositions)
+    
+    lastinputIndex=-1
+    lastinputscorepositionIndex=0
+
+    global q
+    q = []
+
+    def NoteOn(note):
+        midi_out.send_message([0x90,note[1],note[2]])
+
+    def NoteOff(note):
+        midi_out.send_message([0x80,note[1],note[2]])
+
+    def worker(stop_flag_accomp):
+        print_to_terminal('worker starts\n',running_window_terminal)
+        global q
+        global OutputNoteIndex
+        global log,workerlog,workertiminglog,outputlog,noteon_outputtiminglog,noteon_realoutputlog,noteoff_outputtiminglog,noteoff_realoutputlog
+        alreadyplayed=np.zeros(1000)
+        while not stop_flag_accomp.is_set():
+            current_time = time.time()
+            #print('q lenght',len(q))
+            for i in range(len(q)):               # If there is data in queue.
+                #workerlog+='\n'+str(current_time)+' queue has '+str(len(q))+'elements, looking at #'+str(i)
+                try:
+                    note = q[i]
+        #            workerlog+='\n'+str(current_time)+' processing element #'+str(i)+'= '+str(note)+' OutputNoteIndex is '+str(OutputNoteIndex)
+                    if (note[3] <= (current_time)):       # Check the time stamp
+                                                                # of the data.
+                        q.pop(i)
+                        #workerlog+='\n'+str(current_time)+' popped from queue element #'+str(i)
+                        if alreadyplayed[note[5]]==0: #don't play a note already played
+                            #TO FIX: don't play a note whose position is before that of the last note played.
+                            if note[0] == 'note_on':
+                                NoteOn(note)
+                                #print('OUTPUT',current_time,note)
+                                #print(alreadyplayed[note[5]])
+                                alreadyplayed[note[5]]=1
+                                noteon_outputtiminglog+=[note[3]] #[[note[3],note[5]]]
+                                noteon_realoutputlog+=[current_time] #[[current_time,note[5]]]                            
+                            if note[0] == 'note_off':
+                                NoteOff(note)
+                                #print('OUTPUT',current_time,note)
+                                alreadyplayed[note[5]]=1
+                                noteoff_outputtiminglog+=[note[3]] #[[note[3],note[5]]]
+                                noteoff_realoutputlog+=[current_time] #[[current_time,note[5]]]   
+                            #OutputNoteIndex=note[5]+1
+                            # alreadyplayed[note[5]]=1
+                            # print('alreadyplayed',note[5])
+                            
+                            # if note[5]>OutputNoteIndex:
+                            #     print(str(current_time)," ERROR: Expecting OutputNoteIndex ",OutputNoteIndex," already arrived at ", str(note))
+    #                        log+='\n'+str(current_time)+' output from queue'+str(note)
+    #                        workerlog+='\n'+str(current_time)+' worker outputs'+str(note)
+    #                        outputlog+='\n'+str(current_time)+str(note)                        
+                except:
+                    pass
+    framerate=100
+
+    global theta1, theta2, theta3, Omega2, Omega3
+    theta1=np.zeros(200*framerate)
+    theta2=np.zeros(200*framerate)
+    theta3=np.zeros(200*framerate)
+
+    reactiontime=10 #in frames
+
+    Omega2=0.002
+    Omega3=0.002
+    theta2[0]=0
+    theta2[1]=Omega2
+    theta3[0]=0
+    theta3[1]=Omega2
+
+    K21=0.06
+    K23=0.06
+    K32=0.06
+
+    inputq = queue.Queue()
+    def calculating(stop_flag_accomp):
+        starttime=time.time_ns()/1000000000
+        global q
+        global lastinputIndex,lastinputscorepositionIndex
+        global theta1,theta2,theta3
+        global outputinterpretation
+        global arduinoarray
+        while not stop_flag_accomp.is_set():
+            if not inputq.empty():
+                current_time=time.time_ns()/1000000000
+                msg = inputq.get() #format: [144/128, note number, velocity, time in ns]
+                #figure out which input note msg corresponds to. 
+                foundmatch=0
+                if msg[0]==144: 
+                    for note in inputinterpretation:
+                        backlimit=inputscorepositions[lastinputscorepositionIndex]-0.01
+                        forwardlimit=inputscorepositions[lastinputscorepositionIndex+1]+0.51
+                        if note[1]==144 and note[3]>=backlimit and note[3]<=forwardlimit: 
+                            if note[2]==msg[1] and note[4:]==[0,0]: #i.e. if it's the right note and hasn't been played yet
+                                note[4]=msg[3]/1000000000
+                                note[5]=msg[2]
+                                lastinputIndex=max(lastinputIndex,note[0])
+                                lastinputscorepositionIndex=inputscorepositions.index(inputinterpretation[lastinputIndex][3])
+                                #print('lastinputscorepositionIndex',lastinputscorepositionIndex)
+                                foundmatch=1
+                                #print(str(time.time_ns())+'received '+str(msg)+' matched to '+str(note))
+                                break
+                if msg[0]==128:
+                    for note in reversed(inputinterpretation): #find the last time that note was played
+                        if note[1]==144 and note[2]==msg[1] and not note[4:]==[0,0]:
+                            for offnote in inputinterpretation[note[0]:]: #search forward to find the nearest noteoff event
+                                if offnote[1]==128 and offnote[2]==msg[1]:
+                                    if not offnote[4:]==[0,0]:
+                                        print_to_terminal('already got this noteoff\n', running_window_terminal)
+                                    offnote[4]=msg[3]/1000000000
+                                    offnote[5]=msg[2]
+                                    foundmatch=1
+                                    #print(str(time.time_ns())+'received '+str(msg)+' matched to '+str(offnote))
+                                    break
+                            break
+                if foundmatch==0: #i.e. didn't find a match
+                    print_to_terminal('could not match '+ str(msg) + '\n', running_window_terminal)
+                elif msg[0]==144:
+                    #model
+                    #create piecewise linear theta1
+                    points=[[0,-1]]
+                    for position in inputscorepositions:
+                        timing=[]
+                        for note in inputinterpretation:
+                            if note[1]==144 and note[3]==position and not note[4:]==[0,0]:
+                                timing+=[note[4]-starttime]
+                            if note[3]>position:
+                                break
+                        if position>inputscorepositions[lastinputscorepositionIndex]+1:
+                            break
+                        if not len(timing)==0:
+                            points+=[[np.mean(timing),position]]
+                    points.sort(key = lambda x: x[0])
+                    #print('points',points)
+                    for i in range(1,len(points)):
+                        for t in range(int(points[i-1][0]*framerate),int(points[i][0]*framerate)):
+                            theta1[t]=points[i-1][1]+(t/framerate-points[i-1][0])*(points[i][1]-points[i-1][1])/(points[i][0]-points[i-1][0])
+                            if t<100:
+                                currentspeed2=Omega2
+                                currentspeed3=Omega2
+                            if t>99:
+                                currentspeed2=(theta2[t]-theta2[t-100])/100
+                                currentspeed3=(theta3[t]-theta3[t-100])/100
+                            theta2[t+1]=theta2[t]+currentspeed2+K21*(theta1[t]-theta2[t])+K23*(theta3[t]-theta2[t])
+                            theta3[t+1]=theta3[t]+currentspeed3+K32*(theta2[t]-theta3[t])
+                    #predict output timings
+                    lastcalculatedtheta3frame=int(points[-1][0]*framerate)
+                    theta3slope=theta3[lastcalculatedtheta3frame]-theta3[lastcalculatedtheta3frame-1]
+                    theta3yIntercept=theta3[lastcalculatedtheta3frame]-theta3slope*lastcalculatedtheta3frame
+                    #print(theta3slope,' ',theta3yIntercept)
+                    # print(inputinterpretation)
+                    velocity_range=[]
+                    for inputnote in inputinterpretation:
+                        # if not inputnote[5]==0:
+                        #     print(inputnote[0],inputnote[1],inputnote[3],note[3])
+                        if inputnote[1]==144 and not inputnote[5]==0: #and inputnote[3]>=note[3]-1 #search for already played notes starting from 1 beat ago
+                            while len(velocity_range)>4:
+                                velocity_range.pop(0)
+                            velocity_range+=[inputnote[5]]
+                            # print(velocity_range)
+                    current_desired_velocity=int(min(127,1*np.mean(velocity_range)))
+                    for note in outputinterpretation:
+                        outputtime=starttime+(note[3]-theta3yIntercept)/theta3slope/framerate-0.1
+                        note[4]=outputtime
+                        note[5]=current_desired_velocity
+                        # if note[4]<time.time_ns()/1000000000+reactiontime/framerate and note[4]>time.time_ns()/1000000000:
+                        #     pass
+                        # else:
+                        #     note[4]=outputtime
+                        #     if note[4]<time.time_ns()/1000000000+reactiontime/framerate and note[4]>time.time_ns()/1000000000:
+                        #         note[4]=time.time_ns()/1000000000+reactiontime/framerate
+                        #figure out velocity (running average)
+                    #now outputting to worker
+                    q_temp=[]
+                    for note in outputinterpretation:                
+                        backlimit=inputscorepositions[lastinputscorepositionIndex]-0.01
+                        forwardlimit=inputscorepositions[lastinputscorepositionIndex]+1.01
+                        if note[3]>backlimit and note[3]<forwardlimit:
+                            if note[1]==144:
+                                outputmsg=['note_on',note[2],current_desired_velocity,note[4],'accompaniment',note[0],note[3]]
+                            if not note[1]==144:
+                                outputmsg=['note_off',note[2],current_desired_velocity,note[4]-0.001,'accompaniment',note[0],note[3]]
+                            q_temp+=[outputmsg]
+                    #print(q_temp)
+                    q_temp_offloaded=np.zeros(len(q_temp))
+                    for i in range(len(q_temp)):
+                        for j in range(len(q)):
+                            note=q[j]
+                            note_temp=q_temp[i]
+                            if [note[0],note[5]]==[note_temp[0],note_temp[5]]:
+                                if note[3]>current_time+reactiontime/framerate: #only replace if it's after reaction period.
+        #                            log+='\n'+str(current_time)+": replacing q["+str(j)+']='+str(q[j])+' by q_temp['+str(i)+']='+str(q_temp[i])
+                                    q[j]=q_temp[i]
+                                # else:
+                                #     print(str(current_time),' tried to replace ',note,' by ' ,note_temp, ' before reactiontime runs out')
+                                q_temp_offloaded[i]+=1
+                        if q_temp_offloaded[i]==0: #it's a prediction for a note never yet predicted
+                            q+=[q_temp[i]]
+                        if q_temp_offloaded[i]>1:
+                            print(str(current_time),"at input beat: ",inputscorepositions[lastinputscorepositionIndex]," ERROR: duplicate ",str(q_temp[i]))
+                inputq.task_done()
+        
+    def input_reading(stop_flag_accomp):
+        while not stop_flag_accomp.is_set():
+            try:
+                msg = midi_in.get_message()
+                if msg:
+                    if msg[0][0] == NOTE_ON or msg[0][0] == NOTE_OFF:
+                        inputq.put((msg[0][0], msg[0][1], msg[0][2], time.time_ns()))
+            except (EOFError, KeyboardInterrupt):
+                pass
+    
+    threading.Thread(target=input_reading, args=(stop_flag_accomp,)).start()  
+    threading.Thread(target=calculating, args=(stop_flag_accomp,)).start()
+    threading.Thread(target=worker, args=(stop_flag_accomp,)).start()
+
 def show_about_dialog():
     about_dialog = tk.Toplevel(root)
     about_dialog.title("About")
@@ -492,8 +773,8 @@ menu_bar = tk.Menu(root)
 
 # File Menu
 file_menu = tk.Menu(menu_bar, tearoff=0)
-file_menu.add_command(label="Load Score to Melody", command=lambda: open_file_to_terminal(terminal1))
-file_menu.add_command(label="Load Score to Accomp.", command=lambda: open_file_to_terminal(terminal2))
+file_menu.add_command(label="Load Score to Melody", command=open_file_to_terminal1)
+file_menu.add_command(label="Load Score to Accomp.", command=open_file_to_terminal2)
 file_menu.add_command(label="Save Output Logs to File", command=lambda: save_terminal_output_to_file(terminal3))
 file_menu.add_command(label="Exit", command=root.quit)
 menu_bar.add_cascade(label="File", menu=file_menu)
@@ -543,10 +824,10 @@ terminal3.config(state=tk.NORMAL)
 terminal3.grid(row=1, column=2, padx=10, pady=5)
 
 # Buttons
-button_open1 = tk.Button(root, text="Load Score to Melody", width=30, command=lambda: open_file_to_terminal(terminal1))
+button_open1 = tk.Button(root, text="Load Score to Melody", width=30, command=open_file_to_terminal1)
 button_open1.grid(row=2, column=0, padx=5, pady=10, sticky='ew')
 
-button_open2 = tk.Button(root, text="Load Score to Accompaniment", width=30, command=lambda: open_file_to_terminal(terminal2))
+button_open2 = tk.Button(root, text="Load Score to Accompaniment", width=30, command=open_file_to_terminal2)
 button_open2.grid(row=2, column=1, padx=5, pady=10, sticky='ew')
 
 button_save_to_file = tk.Button(root, text="Save Output Logs to File", width=30, command=lambda: save_terminal_output_to_file(terminal3))
@@ -561,20 +842,17 @@ button_clear2.grid(row=3, column=1, padx=5, pady=10, sticky='ew')
 button_clear3 = tk.Button(root, text="Clear Output Logs", width=25, command=lambda: clear_terminal(terminal3))
 button_clear3.grid(row=3, column=2, padx=5, pady=10, sticky='ew')
 
-button_play = tk.Button(root, text="Run", width=15, command=run_real_accomp)
-button_play.grid(row=4, column=1, padx=5, pady=10, sticky='ew')
+button_run = tk.Button(root, text="Run", width=15, command=run_real_accomp)
+button_run.grid(row=4, column=1, padx=5, pady=10, sticky='ew')
 
 button_score_recorder = tk.Button(root, text="Score Recorder", width=15, command=open_score_recorder)
 button_score_recorder.grid(row=4, column=2, padx=5, pady=10, sticky='ew')
-
-button_stop = tk.Button(root, text="Stop", width=15, command=stop_real_accomp)
-button_stop.grid(row=5, column=1, padx=5, pady=10, sticky='ew')
 
 button_score_player = tk.Button(root, text="Score Player", width=15, command=open_score_player)
 button_score_player.grid(row=5, column=2, padx=5, pady=10, sticky='ew')
 
 button_exit = tk.Button(root, text="Exit", width=15, command=root.quit)
-button_exit.grid(row=6, column=1, padx=5, pady=10, sticky='ew')
+button_exit.grid(row=5, column=1, padx=5, pady=10, sticky='ew')
 
 #Frame 1
 frame1 = tk.Frame(root)
@@ -602,6 +880,6 @@ entry_current_midi_input_port.grid(row=0, column=1)
 button_current_midi_input_port = tk.Button(frame2, text="Test", command=midi_input_test)
 button_current_midi_input_port.grid(row=0, column=2, padx=5, pady=5)
 
-midi_init()   
+midi_init()
 
 root.mainloop()
