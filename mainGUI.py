@@ -762,11 +762,11 @@ def show_about_dialog():
     about_dialog = tk.Toplevel(root)
     about_dialog.title("About")
     about_dialog.geometry("300x100")
-    about_label = tk.Label(about_dialog, text="Musical Partner\n你的音樂好夥伴\nVersion 0.1\nCopyright © 2024\nNTHU AHG Music Group")
+    about_label = tk.Label(about_dialog, text="Musical Partner\n你的練琴好夥伴\nVersion 0.1\nCopyright © 2024\nNTHU AHG Music Group")
     about_label.pack(padx=10, pady=10)
 
 root = tk.Tk()
-root.title("Musical Partner - 你的音樂好夥伴")
+root.title("Musical Partner - 你的練琴好夥伴")
 
 # Menu Bar
 menu_bar = tk.Menu(root)
